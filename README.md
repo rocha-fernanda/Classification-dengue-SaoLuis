@@ -38,7 +38,8 @@ Este projeto foi desenvolvido por Fernanda Paula Rocha, sob a orientação de Ma
 
 ## Referência
 
-ROCHA, Fernanda Paula. Avaliação de risco de dengue em São Luís do Maranhão: integração de modelos regressores e classificadores. 2024. 1 recurso online (104 p.) Tese (doutorado) - Universidade Estadual de Campinas, Faculdade de Engenharia Elétrica e de Computação, Campinas, SP. Disponível em: https://hdl.handle.net/20.500.12733/18281. Acesso em: 8 jul. 2024. 
+   ROCHA, Fernanda Paula. Avaliação de risco de dengue em São Luís do Maranhão: integração de modelos regressores e classificadores. 2024. 1 recurso online (104 p.) Tese (doutorado) - Universidade Estadual de Campinas, Faculdade de Engenharia Elétrica e de Computação, Campinas, SP. Disponível em: https://hdl.handle.net/20.500.12733/18281. Acesso em: 8 jul. 2024. 
+   
 ---
 
 
