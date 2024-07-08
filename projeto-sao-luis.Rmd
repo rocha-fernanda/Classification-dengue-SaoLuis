@@ -1,0 +1,1560 @@
+
+---
+title:  "Modelos de Previsão Epidemiológica da dengue em São Luís do Maranhão"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+# Análise de Desempenho de Modelos de Aprendizado de Máquina
+
+O código fornecido realiza a análise de desempenho de diferentes modelos de aprendizado de máquina em um conjunto de dados. O objetivo principal é comparar como diferentes técnicas de balanceamento de dados (SMOTE, ADASYN, DBSMOTE) afetam as métricas de desempenho dos modelos em comparação com o conjunto de dados original. Para isso, são utilizadas métricas como ROC (Receiver Operating Characteristic) e AUC (Area Under the Curve), que são comumente usadas para avaliar a capacidade de classificação de um modelo, além de outras.
+
+Além disso, o código também realiza a análise de importância das variáveis para o modelo Random Forest (RF) em cada conjunto de dados (original, SMOTE, ADASYN, DBSMOTE), mostrando quais variáveis têm maior impacto na capacidade preditiva do modelo.
+
+O dataset utilizado foi elabrado expeficadente para esse projeto e está disponível publicamente no link: [https://doi.org/10.25824/redu/HB37UJ](https://doi.org/10.25824/redu/HB37UJ).
+
+
+```{r setup, include=FALSE}
+
+# Carregando bibliotecas necessárias
+suppressMessages(library(csv))
+suppressMessages(library(archivist))
+suppressMessages(library(DALEX))
+suppressMessages(library(knitr))
+suppressMessages(library(randomForest))
+suppressMessages(library(corrplot))
+suppressMessages(library(rpart))
+suppressMessages(library(boot))
+suppressMessages(library(pacman))
+suppressMessages(library(extrafont))
+suppressMessages(library(forcats))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ROSE))
+suppressMessages(library(pROC))
+suppressMessages(library(smotefamily))
+suppressMessages(library(ggthemes))
+suppressMessages(library(arm))
+suppressMessages(library(safeBinaryRegression))
+suppressMessages(library(factoextra))
+suppressMessages(library(stats))
+suppressMessages(library(caTools))
+suppressMessages(library(caret))
+suppressMessages(library(faraway))
+suppressMessages(library(tinytex))
+suppressMessages(library(mfx))
+suppressMessages(library(shiny))
+suppressMessages(library(DT))
+suppressMessages(library(psych))
+suppressMessages(library(Rcmdr))
+suppressMessages(library(MASS))
+suppressMessages(library(tidyverse))
+suppressMessages(library(dplyr))
+suppressMessages(library(ISLR))
+suppressMessages(library(readr))
+suppressMessages(library(tidyr))
+suppressMessages(library(forecast))
+suppressMessages(library(tseries))
+suppressMessages(library(xgboost))
+suppressMessages(library(rpart.plot))
+suppressMessages(library(plotly))
+suppressMessages(library(readxl))
+```
+
+## 1.1 Importando o DataSet
+
+```{r}
+# Importando o conjunto de dados
+dados_original <- read.csv("C:/Users/ferna/OneDrive/Área de Trabalho/Conj2_artigo/df-conj2.csv", sep = ',', dec = ',')
+
+# Verificando a estrutura do conjunto de dados
+str(dados_original)
+```
+
+```{r}
+# Renomeando a coluna "dengue" para "CasosBin2"
+dados_original <- dados_original %>%
+  rename(CasosBin2 = dengue)
+
+# Convertendo todas as colunas de caracteres para numéricas
+dados_original <- dados_original %>%
+  mutate(across(where(is.character), as.numeric))
+
+# Convertendo colunas específicas para numéricas
+dados_original$EVI <- as.numeric(dados_original$EVI, dec = ".")
+dados_original$Precip <- as.numeric(dados_original$Precip, dec = ".")
+dados_original$tavg <- as.numeric(dados_original$tavg, dec = ".")
+dados_original$tmin <- as.numeric(dados_original$tmin, dec = ".")
+dados_original$tmax <- as.numeric(dados_original$tmax, dec = ".")
+dados_original$wspd <- as.numeric(dados_original$wspd, dec = ".")
+dados_original$wdir <- as.numeric(dados_original$wdir, dec = ".")
+dados_original$Latitude <- as.numeric(dados_original$Latitude, dec = ".")
+dados_original$Longitude <- as.numeric(dados_original$Longitude, dec = ".")
+dados_original$Umidade <- as.numeric(dados_original$Umidade, dec = ".")
+```
+
+```{r}
+# Verificando a estrutura do conjunto de dados após as modificações
+str(dados_original)
+
+# Obtendo e imprimindo os nomes das variáveis
+nomes_das_variaveis <- colnames(dados_original)
+lista_como_string <- paste("[", paste('"', nomes_das_variaveis, '"', collapse = ", "), "]", sep = "")
+print(lista_como_string)
+```
+
+```{r}
+# Selecionando as variáveis relevantes para a análise
+dados_original <- dados_original[, c('Month', 'Longitude', 'Latitude', 'EVI', 'Precip', 'tavg', 'tmin', 'tmax', 'wdir', 'wspd', 'CasosBin2')]
+```
+
+## Atribuindo uma variável de categoria "Sim" para locais que tiveram casos notificados e "Não" para os demais
+
+```{r}
+dados_original$CasosBin2 <- factor(dados_original$CasosBin2, labels = c("Não", "Sim"), levels = c(0, 1))
+
+# Plotando a variável CasosBin2
+plot(dados_original$CasosBin2)
+```
+
+```{r}
+# Explorando o conjunto de dados
+glimpse(dados_original)
+summary(dados_original)
+table(dados_original$CasosBin2)
+levels(dados_original$CasosBin2)
+```
+
+# Chegando o desbalanceamento do DataSet
+
+```{r}
+summary(dados_original$CasosBin2)
+# Tabela proporcional 
+prop.table(table(dados_original$CasosBin2)) 
+```
+
+# 3. Dividindo os dados em conjunto de treinamento e teste
+
+É importante que, quando avaliamos o desempenho de um modelo, o façamos em um conjunto de dados que o modelo não viu anteriormente. Portanto, vamos dividir nosso conjunto de dados em um conjunto de dados de treinamento e um conjunto de dados de teste e, para manter o mesmo nível de desequilíbrio do conjunto de dados original, usaremos a amostragem estratificada por "classe". 
+
+Conjunto de dados de treinamento: este é o subconjunto aleatório de seus dados usado para ajustar inicialmente (u treinar) o modelo. 
+
+Conjunto de dados de teste: este conjunto de dados é usado para fornecer uma avaliação imparcial do ajuste do modelo no conjunto de dados de treinamento.
+
+Aqui dividiremos nosso conjunto de difrentes formas e testaremos os algoritmos de classifcação em cada um. Sendo o primeiro um intervalo específico em determinado período, depois feitos aleatoriamente pelo método de validação cruzada, após usaremos os métodos de subamostragem. 
+
+
+## 3.1 Treino/Teste
+
+Dividindo dados de introdução de treinamento e conjunto de dados de teste que serão usados para a construção de modelos (conjunto de dados de treinamento)
+
+```{r}
+set.seed(123)
+train <- createDataPartition(dados_original$CasosBin2, p = 0.7, times = 1, list = FALSE)
+train.orig <- dados_original[train, ]
+test <- dados_original[-train, ]
+```
+
+#### Chegando as proporções das observações de cada grupo
+
+```{r}
+## porcentagem de linha de resultado no conjunto de treino original - coluna
+dim(train.orig) / dim(dados_original) 
+```
+
+Desbalanceamento no conjunto de treinamento 
+
+```{r}
+prop.table(table(train.orig$CasosBin2))
+```
+Desbalanceamento no conjunto de teste
+
+```{r}
+prop.table(table(test$CasosBin2))
+```
+
+
+### 4. Aplicando dados desbalanceados aos modelos
+
+Aqui vamos verificar como se comportam os conjuntos de treinamento e teste obtidos com Validação Cruzada nos modelos com [métodos de reamostragem](http://cursos.leg.ufpr.br/ML4all/apoio/reamostragem.html).
+
+Usaremos o pacote 'caret' para treinar três modelos classificadores (árvore de decisão, Naive Bayes, análise discriminante linear) e regressão logística. Vamos começar ajustando os três modelos de classificador usando o conjunto de dados de treinamento desbalanceado original. Usaremos validação cruzada repetida 10 vezes em todos os nossos modelos treinados.
+
+#### A. Opções globais que usaremos em todos os nossos modelos treinados
+
+```{r}
+probabilidade = 0.2
+
+ctrl <- trainControl(method = "cv",
+                     number = 6,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+```
+
+#### B. Árvore de Decisão: dados desbalanceados
+
+```{r}
+dt_orig_start <- Sys.time()
+dt_orig <- train(CasosBin2 ~ .,
+                 data = train.orig,
+                 method = "rpart",
+                 trControl = ctrl,
+                 tuneGrid = expand.grid(.cp = seq(0.01, 0.5, by = 0.01))) 
+
+dt_orig_end <- Sys.time()
+dt_orig_runtime <- dt_orig_end - dt_orig_start
+dt_orig_runtime
+
+dt_orig_train_pred <- predict(dt_orig,train.orig,type = "prob")
+dt_orig_train <- factor(ifelse(dt_orig_train_pred$Sim > probabilidade,"Sim","Não"))
+confusionMatrix(dt_orig_train, getElement(train.orig,'CasosBin2'), positive="Sim")
+
+precisionTrain_dtOrig <- posPredValue(dt_orig_train,train.orig$CasosBin2,positive = "Sim")
+recallTrain_dtOrig    <- sensitivity(dt_orig_train,train.orig$CasosBin2,positive = "Sim")
+F1Train_dtOrig  <- (2 * precisionTrain_dtOrig * recallTrain_dtOrig) / (recallTrain_dtOrig + precisionTrain_dtOrig)
+```
+
+#### C. Naive Bayes: dados desbalanceados
+
+```{r}
+nb_orig_start <- Sys.time()
+nb_orig <- train(CasosBin2 ~ .,
+                 data = train.orig,
+                 method = "naive_bayes",
+                 trControl = ctrl,
+                 metric = "ROC")
+
+nb_orig_end <- Sys.time()
+nb_orig_runtime <- nb_orig_end - nb_orig_start
+nb_orig_runtime
+
+nb_orig_train_pred <- predict(nb_orig,train.orig,type = "prob")
+nb_orig_train <- factor(ifelse(nb_orig_train_pred$Sim > probabilidade,"Sim","Não"))
+confusionMatrix(nb_orig_train, getElement(train.orig,'CasosBin2'), positive="Sim")
+
+precisionTrain_nbOrig <- posPredValue(nb_orig_train,train.orig$CasosBin2,positive = "Sim")
+recallTrain_nbOrig    <- sensitivity(nb_orig_train,train.orig$CasosBin2,positive = "Sim")
+F1Train_nbOrig         <- (2 * precisionTrain_nbOrig * recallTrain_nbOrig) / (recallTrain_nbOrig + precisionTrain_nbOrig)
+```
+
+#### D. Análise Discriminante Linear: dados desbalanceados
+
+```{r}
+lda_orig_start <- Sys.time()
+lda_orig <- train(CasosBin2 ~ .,
+                 data = train.orig,
+                 method = "lda",
+                 trControl = ctrl,
+                 metric = "ROC")
+
+lda_orig_end <- Sys.time()
+lda_orig_runtime <- lda_orig_end - lda_orig_start
+lda_orig_runtime 
+
+lda_orig_train_pred <- predict(lda_orig,train.orig,type = "prob")
+lda_orig_train <- factor(ifelse(lda_orig_train_pred$Sim > probabilidade,"Sim","Não"))
+confusionMatrix(lda_orig_train, getElement(train.orig,'CasosBin2'), positive="Sim")
+
+precisionTrain_ldaOrig <- posPredValue(lda_orig_train,train.orig$CasosBin2,positive = "Sim")
+recallTrain_ldaOrig    <- sensitivity(lda_orig_train,train.orig$CasosBin2,positive = "Sim")
+F1Train_ldaOrig         <- (2 * precisionTrain_ldaOrig * recallTrain_ldaOrig) / (recallTrain_ldaOrig + precisionTrain_ldaOrig)
+```
+
+#### E. Regressão Logística: dados desbalanceados
+
+```{r}
+train.orig$CasosBin2 <- factor(train.orig$CasosBin2)
+
+lr_orig_start <- Sys.time()
+lr_orig <- train(CasosBin2 ~ .,
+                 data = train.orig,
+                 method = "bayesglm",
+                 trControl = ctrl,
+                 metric = "ROC")
+
+lr_orig_end <- Sys.time()
+lr_orig_runtime <- lr_orig_end - lr_orig_start
+lr_orig_runtime
+
+lr_orig_train_pred <- predict(lr_orig,train.orig,type = "prob")
+lr_orig_train <- factor(ifelse(lr_orig_train_pred$Sim > probabilidade,"Sim","Não"))
+confusionMatrix(lr_orig_train, getElement(train.orig,'CasosBin2'), positive="Sim")
+
+precisionTrain_lrOrig <- posPredValue(lr_orig_train,train.orig$CasosBin2,positive = "Sim")
+recallTrain_lrOrig    <- sensitivity(lr_orig_train,train.orig$CasosBin2,positive = "Sim")
+F1Train_lrOrig         <- (2 * precisionTrain_lrOrig * recallTrain_lrOrig) / (recallTrain_lrOrig + precisionTrain_lrOrig)
+```
+
+#### F. Random Forest: dados desbalanceados
+
+```{r}
+rf_orig_start <- Sys.time()
+rf_orig <- train(CasosBin2 ~ .,
+                 data = train.orig,
+                 method = "rf",
+                 trControl = ctrl,
+                 tuneGrid = expand.grid(.mtry = c(1, 2, 3, 4))) 
+
+rf_orig_end <- Sys.time()
+rf_orig_runtime <- rf_orig_end - rf_orig_start
+rf_orig_runtime
+
+rf_orig_train_pred <- predict(rf_orig,train.orig,type = "prob")
+rf_orig_train <- factor(ifelse(rf_orig_train_pred$Sim > probabilidade,"Sim","Não"))
+confusionMatrix(rf_orig_train, getElement(train.orig,'CasosBin2'), positive="Sim")
+
+precisionTrain_rfOrig <- posPredValue(rf_orig_train,train.orig$CasosBin2,positive = "Sim")
+recallTrain_rfOrig    <- sensitivity(rf_orig_train,train.orig$CasosBin2,positive = "Sim")
+F1Train_rfOrig   <- (2 * precisionTrain_rfOrig * recallTrain_rfOrig) / (recallTrain_rfOrig + precisionTrain_rfOrig)
+```
+
+
+### 5. Avaliação dos Modelos no Conjunto de Teste
+
+#### Decision Tree Model - Teste no conjunto desbalanceados
+
+
+```{r}
+#A. Decision Tree Model predictions
+dt_orig_pred_start <- Sys.time()
+dt_orig_pred <- predict(dt_orig, test, type = "prob")
+
+#B. Decision Tree - Assign class to probabilities
+dt_orig_test <- factor(ifelse(dt_orig_pred$Sim > probabilidade, "Sim", "Não"))
+
+dt_orig_pred_end <- Sys.time()
+dt_orig_pred_runtime <- dt_orig_pred_end - dt_orig_pred_start
+dt_orig_pred_runtime
+
+confusionMatrix(dt_orig_test, getElement(test, 'CasosBin2'), positive="Sim")
+
+#C. Decision Tree Save Precision/Recall/F
+precision_dtOrig <- posPredValue(dt_orig_test, test$CasosBin2, positive = "Sim")
+recall_dtOrig <- sensitivity(dt_orig_test, test$CasosBin2, positive = "Sim")
+F1_dtOrig <- (2 * precision_dtOrig * recall_dtOrig) / (recall_dtOrig + precision_dtOrig)
+```
+
+#### Naive Bayes Model - Teste no conjunto desbalanceados
+
+```{r}
+#A. NB Model predictions
+nb_orig_pred_start <- Sys.time()
+nb_orig_pred <- predict(nb_orig, test, type = "prob")
+
+#B. NB - Assign class to probabilities
+nb_orig_test <- factor(ifelse(nb_orig_pred$Sim > probabilidade, "Sim", "Não"))
+nb_orig_pred_end <- Sys.time()
+nb_orig_pred_runtime <- nb_orig_pred_end - nb_orig_pred_start
+nb_orig_pred_runtime
+
+confusionMatrix(nb_orig_test, getElement(test, 'CasosBin2'), positive="Sim")
+
+#C. NB Save Precision/Recall/F
+precision_nbOrig <- posPredValue(nb_orig_test, test$CasosBin2, positive = "Sim")
+recall_nbOrig <- sensitivity(nb_orig_test, test$CasosBin2, positive = "Sim")
+F1_nbOrig <- (2 * precision_nbOrig * recall_nbOrig) / (recall_nbOrig + precision_nbOrig)
+```
+
+#### Análise Discriminante Linear (LDA) - Teste no conjunto desbalanceados
+
+```{r}
+#A. LDA Model predictions
+lda_orig_pred_start <- Sys.time()
+lda_orig_pred <- predict(lda_orig, test, type = "prob")
+
+#B. LDA - Assign class to probabilities
+lda_orig_test <- factor(ifelse(lda_orig_pred$Sim > probabilidade, "Sim", "Não"))
+lda_orig_pred_end <- Sys.time()
+lda_orig_pred_runtime <- lda_orig_pred_end - lda_orig_pred_start
+lda_orig_pred_runtime
+
+confusionMatrix(lda_orig_test, getElement(test, 'CasosBin2'), positive="Sim")
+
+#C. LDA Save Precision/Recall/F
+precision_ldaOrig <- posPredValue(lda_orig_test, test$CasosBin2, positive = "Sim")
+recall_ldaOrig <- sensitivity(lda_orig_test, test$CasosBin2, positive = "Sim")
+F1_ldaOrig <- (2 * precision_ldaOrig * recall_ldaOrig) / (recall_ldaOrig + precision_ldaOrig)
+```
+
+#### Regressão Logística (LR) - Teste no conjunto desbalanceados
+
+```{r}
+#A. LR Model predictions
+lr_orig_pred_start <- Sys.time()
+lr_orig_pred <- predict(lr_orig, test, type = "prob")
+
+#B. LR - Assign class to probabilities
+lr_orig_test <- factor(ifelse(lr_orig_pred$Sim > probabilidade, "Sim", "Não"))
+lr_orig_pred_end <- Sys.time()
+lr_orig_pred_runtime <- lr_orig_pred_end - lr_orig_pred_start
+lr_orig_pred_runtime
+
+confusionMatrix(lr_orig_test, getElement(test, 'CasosBin2'), positive="Sim")
+
+#C. LR Save Precision/Recall/F
+precision_lrOrig <- posPredValue(lr_orig_test, test$CasosBin2, positive = "Sim")
+recall_lrOrig <- sensitivity(lr_orig_test, test$CasosBin2, positive = "Sim")
+F1_lrOrig <- (2 * precision_lrOrig * recall_lrOrig) / (recall_lrOrig + precision_lrOrig)
+```
+
+#### Random Forest Model - Teste no conjunto desbalanceados
+
+```{r}
+#A. RF Model predictions
+rf_orig_pred_start <- Sys.time()
+rf_orig_pred <- predict(rf_orig, test, type = "prob")
+
+#B. RF - Assign class to probabilities
+rf_orig_test <- factor(ifelse(rf_orig_pred$Sim > probabilidade, "Sim", "Não"))
+rf_orig_pred_end <- Sys.time()
+rf_orig_pred_runtime <- rf_orig_pred_end - rf_orig_pred_start
+rf_orig_pred_runtime
+
+confusionMatrix(rf_orig_test, getElement(test, 'CasosBin2'), positive="Sim")
+
+#C. RF Save Precision/Recall/F
+precision_rfOrig <- posPredValue(rf_orig_test, test$CasosBin2, positive = "Sim")
+recall_rfOrig <- sensitivity(rf_orig_test, test$CasosBin2, positive = "Sim")
+F1_rfOrig <- (2 * precision_rfOrig * recall_rfOrig) / (recall_rfOrig + precision_rfOrig)
+```
+
+
+### 6. Balanceamento dos Dados
+
+Agora que dividimos nosso conjunto de dados em um conjunto de dados de treinamento e teste, vamos criar quatro novos conjuntos de dados equilibrados sinteticamente a partir de um conjunto de dados de treinamento desequilibrado. Para fazer isso, usaremos o pacote "smotefamily" no R e tentaremos três técnicas diferentes: SMOTE, ADASYN e DB-SMOTE.
+
+- **SMOTE (Synthetic Minority Oversampling Technique)**: Um subconjunto de dados é obtido da classe minoritária como exemplo. Novos exemplos sintéticos semelhantes são gerados a partir do "espaço de recursos" em vez do "espaço de dados".
+- **ADASYN (Adaptive Synthetic Sampling)**: Uma distribuição ponderada é usada dependendo de cada classe minoritária de acordo com seu grau de dificuldade de aprendizagem. Observações mais sintéticas são geradas para algumas instâncias de classe minoritária que são mais difíceis de aprender em comparação com outras.
+- **DB-SMOTE (Density Based SMOTE)**: Isso sobrescreve a classe minoritária no limite de decisão e examina excessivamente a região para manter a maior taxa de detecção de classe. É mais provável que sejam classificados erroneamente do que aqueles que estão longe da fronteira.
+
+#### Balanceamento dos Dados com SMOTE, ADASYN e DB-SMOTE
+
+```{r, include = FALSE}
+# Balanceamento dos Dados
+library(smotefamily)
+
+# SMOTE Balanced
+train.smote <- SMOTE(train.orig[,-11], train.orig$CasosBin2, K = 6)
+train.smote <- train.smote$data  # extract only the balanced dataset
+train.smote$class <- as.factor(train.smote$class)
+
+# ADASYN Balanced
+train.adas <- ADAS(train.orig[,-11], train.orig$CasosBin2, K = 6)
+train.adas <- train.adas$data  # extract only the balanced dataset
+train.adas$class <- as.factor(train.adas$class)
+
+# DB-SMOTE Balanced
+train.dbsmote <- DBSMOTE(train.orig[,-11], train.orig$CasosBin2)
+train.dbsmote <- train.dbsmote$data  # extract only the balanced dataset
+train.dbsmote$class <- as.factor(train.dbsmote$class)
+
+# Proporção das Classes
+prop.table(table(train.smote$class))
+prop.table(table(train.adas$class))
+prop.table(table(train.dbsmote$class))
+```
+
+### 6.1 SMOTE Balanced Data: Treinamento dos Modelos de Decision Tree, Naive Bayes, LDA, Regressão Logística e Random Forest
+
+
+#### Árvore de Decisão: Treinamento no conjunto SMOTE
+
+```{r}
+# A. Árvore de Decisão: SMOTE Data
+dt_smote_start <- Sys.time()
+dt_smote <- train(class ~ ., data = train.smote, method = "rpart", trControl = ctrl, metric = "ROC")
+dt_smote_end <- Sys.time()
+dt_smote_runtime <- dt_smote_end - dt_smote_start
+dt_smote_runtime
+
+dt_smote_train_pred <- predict(dt_smote, train.smote, type = "prob")
+dt_smote_train <- factor(ifelse(dt_smote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(dt_smote_train, getElement(train.smote, 'class'), positive = "Sim")
+
+# C. Decision Save Precision/Recall/F
+precisionTrain_dtsmote <- posPredValue(dt_smote_train, train.smote$class, positive = "Sim")
+recallTrain_dtsmote <- sensitivity(dt_smote_train, train.smote$class, positive = "Sim")
+F1Train_dtsmote <- (2 * precisionTrain_dtsmote * recallTrain_dtsmote) / (precisionTrain_dtsmote + recallTrain_dtsmote)
+```
+
+#### Naive Bayes: Treinamento no conjunto SMOTE
+
+```{r}
+# B. Naive Bayes: SMOTE Data
+nb_smote_start <- Sys.time()
+nb_smote <- train(class ~ ., data = train.smote, method = "naive_bayes", trControl = ctrl, metric = "ROC")
+nb_smote_end <- Sys.time()
+nb_smote_runtime <- nb_smote_end - nb_smote_start
+nb_smote_runtime
+
+nb_smote_train_pred <- predict(nb_smote, train.smote, type = "prob")
+nb_smote_train <- factor(ifelse(nb_smote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(nb_smote_train, getElement(train.smote, 'class'), positive = "Sim")
+
+# C. NB Save Precision/Recall/F
+precisionTrain_nbsmote <- posPredValue(nb_smote_train, train.smote$class, positive = "Sim")
+recallTrain_nbsmote <- sensitivity(nb_smote_train, train.smote$class, positive = "Sim")
+F1Train_nbsmote <- (2 * precisionTrain_nbsmote * recallTrain_nbsmote) / (precisionTrain_nbsmote + recallTrain_nbsmote)
+```
+
+#### Análise Discriminante Linear: Treinamento no conjunto SMOTE
+
+```{r}
+# C. Análise Discriminante Linear: SMOTE Data
+lda_smote_start <- Sys.time()
+lda_smote <- train(class ~ ., data = train.smote, method = "lda", trControl = ctrl, metric = "ROC")
+lda_smote_end <- Sys.time()
+lda_smote_runtime <- lda_smote_end - lda_smote_start
+lda_smote_runtime
+
+lda_smote_train_pred <- predict(lda_smote, train.smote, type = "prob")
+lda_smote_train <- factor(ifelse(lda_smote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lda_smote_train, getElement(train.smote, 'class'), positive = "Sim")
+
+# C. LDA Save Precision/Recall/F
+precisionTrain_ldasmote <- posPredValue(lda_smote_train, train.smote$class, positive = "Sim")
+recallTrain_ldasmote <- sensitivity(lda_smote_train, train.smote$class, positive = "Sim")
+F1Train_ldasmote <- (2 * precisionTrain_ldasmote * recallTrain_ldasmote) / (precisionTrain_ldasmote + recallTrain_ldasmote)
+```
+
+#### Regressão Logística: Treinamento no conjunto SMOTE
+
+```{r}
+# D. Regressão Logística: SMOTE Data
+lr_smote_start <- Sys.time()
+lr_smote <- train(class ~ ., data = train.smote, method = "bayesglm", trControl = ctrl, metric = "ROC")
+lr_smote_end <- Sys.time()
+lr_smote_runtime <- lr_smote_end - lr_smote_start
+lr_smote_runtime
+
+lr_smote_train_pred <- predict(lr_smote, train.smote, type = "prob")
+lr_smote_train <- factor(ifelse(lr_smote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lr_smote_train, getElement(train.smote, 'class'), positive = "Sim")
+
+# C. LR Save Precision/Recall/F
+precisionTrain_lrsmote <- posPredValue(lr_smote_train, train.smote$class, positive = "Sim")
+recallTrain_lrsmote <- sensitivity(lr_smote_train, train.smote$class, positive = "Sim")
+F1Train_lrsmote <- (2 * precisionTrain_lrsmote * recallTrain_lrsmote) / (precisionTrain_lrsmote + recallTrain_lrsmote)
+```
+
+#### Random Forest: Treinamento no conjunto SMOTE
+
+```{r}
+# E. Random Forest: SMOTE Data
+rf_smote_start <- Sys.time()
+rf_smote <- train(class ~ ., data = train.smote, method = "rf", trControl = ctrl, metric = "ROC")
+rf_smote_end <- Sys.time()
+rf_smote_runtime <- rf_smote_end - rf_smote_start
+rf_smote_runtime
+
+rf_smote_train_pred <- predict(rf_smote, train.smote, type = "prob")
+rf_smote_train <- factor(ifelse(rf_smote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(rf_smote_train, getElement(train.smote, 'class'), positive = "Sim")
+
+# C. RF Save Precision/Recall/F
+precisionTrain_rfsmote <- posPredValue(rf_smote_train, train.smote$class, positive = "Sim")
+recallTrain_rfsmote <- sensitivity(rf_smote_train, train.smote$class, positive = "Sim")
+F1Train_rfsmote <- (2 * precisionTrain_rfsmote * recallTrain_rfsmote) / (precisionTrain_rfsmote + recallTrain_rfsmote)
+```
+
+
+### 6.1.1 Compilar Previsões Usando Modelos Treinados no Conjunto de Dados de Teste Balanceado SMOTE
+
+Em seguida, usaremos os modelos que treinamos usando o conjunto de dados de treinamento balanceado SMOTE para gerar previsões no conjunto de dados de teste e calcularemos nossas quatro medidas de desempenho.
+
+#### Decision Tree Model - Teste dos modelos treinados no conjunto SMOTE
+
+```{r}
+# A. Decision Tree Model predictions
+dt_smote_pred_start <- Sys.time()
+dt_smote_pred <- predict(dt_smote, test, type = "prob")
+
+# Decision Tree - Assign class to probabilities
+dt_smote_test <- factor(ifelse(dt_smote_pred$Sim > probabilidade, "Sim", "Não"))
+dt_smote_pred_end <- Sys.time()
+dt_smote_pred_runtime <- dt_smote_pred_end - dt_smote_pred_start
+dt_smote_pred_runtime
+
+confusionMatrix(dt_smote_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# Decision Save Precision/Recall/F
+precision_dtsmote <- posPredValue(dt_smote_test, test$CasosBin2, positive = "Sim")
+recall_dtsmote <- sensitivity(dt_smote_test, test$CasosBin2, positive = "Sim")
+F1_dtsmote <- (2 * precision_dtsmote * recall_dtsmote) / (precision_dtsmote + recall_dtsmote)
+
+```
+
+#### Naive Bayes Model - Teste dos modelos treinados no conjunto SMOTE
+
+```{r}
+# B. NB Model predictions
+nb_smote_pred_start <- Sys.time()
+nb_smote_pred <- predict(nb_smote, test, type = "prob")
+
+#  NB - Assign class to probabilities
+nb_smote_test <- factor(ifelse(nb_smote_pred$Sim > probabilidade, "Sim", "Não"))
+nb_smote_pred_end <- Sys.time()
+nb_smote_pred_runtime <- nb_smote_pred_end - nb_smote_pred_start
+nb_smote_pred_runtime
+
+confusionMatrix(nb_smote_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# NB Save Precision/Recall/F
+precision_nbsmote <- posPredValue(nb_smote_test, test$CasosBin2, positive = "Sim")
+recall_nbsmote <- sensitivity(nb_smote_test, test$CasosBin2, positive = "Sim")
+F1_nbsmote <- (2 * precision_nbsmote * recall_nbsmote) / (precision_nbsmote + recall_nbsmote)
+```
+
+#### Análise Discriminante Linear (LDA) - Teste dos modelos treinados no conjunto SMOTE
+
+```{r}
+# C. LDA Model predictions
+lda_smote_pred_start <- Sys.time()
+lda_smote_pred <- predict(lda_smote, test, type = "prob")
+
+#  LDA - Assign class to probabilities
+lda_smote_test <- factor(ifelse(lda_smote_pred$Sim > probabilidade, "Sim", "Não"))
+lda_smote_pred_end <- Sys.time()
+lda_smote_pred_runtime <- lda_smote_pred_end - lda_smote_pred_start
+lda_smote_pred_runtime
+
+confusionMatrix(lda_smote_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# LDA Save Precision/Recall/F
+precision_ldasmote <- posPredValue(lda_smote_test, test$CasosBin2, positive = "Sim")
+recall_ldasmote <- sensitivity(lda_smote_test, test$CasosBin2, positive = "Sim")
+F1_ldasmote <- (2 * precision_ldasmote * recall_ldasmote) / (precision_ldasmote + recall_ldasmote)
+
+```
+
+#### Regressão Logística (LR) - Teste dos modelos treinados no conjunto SMOTE
+
+```{r}
+
+# A. LR Model predictions
+lr_smote_pred_start <- Sys.time()
+lr_smote_pred <- predict(lr_smote, test, type = "prob")
+
+# LR - Assign class to probabilities
+lr_smote_test <- factor(ifelse(lr_smote_pred$Sim > probabilidade, "Sim", "Não"))
+lr_smote_pred_end <- Sys.time()
+lr_smote_pred_runtime <- lr_smote_pred_end - lr_smote_pred_start
+lr_smote_pred_runtime
+
+confusionMatrix(lr_smote_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# LR Save Precision/Recall/F
+precision_lrsmote <- posPredValue(lr_smote_test, test$CasosBin2, positive = "Sim")
+recall_lrsmote <- sensitivity(lr_smote_test, test$CasosBin2, positive = "Sim")
+F1_lrsmote <- (2 * precision_lrsmote * recall_lrsmote) / (precision_lrsmote + recall_lrsmote)
+
+```
+
+#### Random Forest Model - Teste dos modelos treinados no conjunto SMOTE
+
+```{r}
+
+# A. RF Model predictions
+rf_smote_pred_start <- Sys.time()
+rf_smote_pred <- predict(rf_smote, test, type = "prob")
+
+# RF - Assign class to probabilities
+rf_smote_test <- factor(ifelse(rf_smote_pred$Sim > probabilidade, "Sim", "Não"))
+rf_smote_pred_end <- Sys.time()
+rf_smote_pred_runtime <- rf_smote_pred_end - rf_smote_pred_start
+rf_smote_pred_runtime
+
+confusionMatrix(rf_smote_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# RF Save Precision/Recall/F
+precision_rfsmote <- posPredValue(rf_smote_test, test$CasosBin2, positive = "Sim")
+recall_rfsmote <- sensitivity(rf_smote_test, test$CasosBin2, positive = "Sim")
+F1_rfsmote <- (2 * precision_rfsmote * recall_rfsmote) / (precision_rfsmote + recall_rfsmote)
+```
+
+
+### 6.2 ADASYN Balanced Data: Train Decision Tree, Naive Bayes, LDA and LR Models
+
+####  Decision Tree: Treinamento no conjunto ADASYN 
+
+```{r}
+
+# A. Decision Tree: ADASYN data
+dt_adas_start <- Sys.time()
+dt_adas <- train(class ~ .,
+                 data = train.adas,
+                 method = 'rpart',
+                 metric = "ROC",
+                 trControl = ctrl)
+dt_adas_end <- Sys.time()
+dt_adas_runtime <- dt_adas_end - dt_adas_start
+dt_adas_runtime
+
+dt_adas_train_pred <- predict(dt_adas, train.adas, type = "prob")
+dt_adas_train <- factor(ifelse(dt_adas_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(dt_adas_train, train.adas$class, positive = "Sim")
+
+# C. Decision Save Precision/Recall/F
+precisionTrain_dtadas <- posPredValue(dt_adas_train, train.adas$class, positive = "Sim")
+recallTrain_dtadas <- sensitivity(dt_adas_train, train.adas$class, positive = "Sim")
+F1Train_dtadas <- (2 * precisionTrain_dtadas * recallTrain_dtadas) / (precisionTrain_dtadas + recallTrain_dtadas)
+
+```
+
+
+#### Naive Bayes regression: Treinamento no conjunto ADASYN 
+
+```{r}
+# B. Naive Bayes regression: ADASYN data
+nb_adas_start <- Sys.time()
+nb_adas <- train(class ~ .,
+                 data = train.adas,
+                 method = "naive_bayes",
+                 metric = "ROC",
+                 trControl = ctrl)
+nb_adas_end <- Sys.time()
+nb_adas_runtime <- nb_adas_end - nb_adas_start
+nb_adas_runtime
+
+nb_adas_train_pred <- predict(nb_adas, train.adas, type = "prob")
+nb_adas_train <- factor(ifelse(nb_adas_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(nb_adas_train, train.adas$class, positive = "Sim")
+
+# C. NB Save Precision/Recall/F
+precisionTrain_nbadas <- posPredValue(nb_adas_train, train.adas$class, positive = "Sim")
+recallTrain_nbadas <- sensitivity(nb_adas_train, train.adas$class, positive = "Sim")
+F1Train_nbadas <- (2 * precisionTrain_nbadas * recallTrain_nbadas) / (precisionTrain_nbadas + recallTrain_nbadas)
+
+```
+
+#### Linear Discriminant Analysis: Treinamento no conjunto ADASYN  
+
+```{r}
+
+# C. Linear Discriminant Analysis: ADASYN data
+lda_adas_start <- Sys.time()
+lda_adas <- train(class ~ .,
+                  data = train.adas,
+                  method = 'lda',
+                  metric = "ROC",
+                  trControl = ctrl)
+lda_adas_end <- Sys.time()
+lda_adas_runtime <- lda_adas_end - lda_adas_start
+lda_adas_runtime
+
+lda_adas_train_pred <- predict(lda_adas, train.adas, type = "prob")
+lda_adas_train <- factor(ifelse(lda_adas_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lda_adas_train, train.adas$class, positive = "Sim")
+
+# C. LDA Save Precision/Recall/F
+precisionTrain_ldaadas <- posPredValue(lda_adas_train, train.adas$class, positive = "Sim")
+recallTrain_ldaadas <- sensitivity(lda_adas_train, train.adas$class, positive = "Sim")
+F1Train_ldaadas <- (2 * precisionTrain_ldaadas * recallTrain_ldaadas) / (precisionTrain_ldaadas + recallTrain_ldaadas)
+
+```
+
+#### Regressão Logística: Treinamento no conjunto ADASYN 
+
+```{r}
+
+# D. Regressão Logística: ADASYN data
+lr_adas_start <- Sys.time()
+lr_adas <- train(class ~ .,
+                 data = train.adas,
+                 method = "bayesglm",
+                 trControl = ctrl,
+                 metric = "ROC")
+lr_adas_end <- Sys.time()
+lr_adas_runtime <- lr_adas_end - lr_adas_start
+lr_adas_runtime
+
+lr_adas_train_pred <- predict(lr_adas, train.adas, type = "prob")
+lr_adas_train <- factor(ifelse(lr_adas_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lr_adas_train, train.adas$class, positive = "Sim")
+
+# C. LR Save Precision/Recall/F
+precisionTrain_lradas <- posPredValue(lr_adas_train, train.adas$class, positive = "Sim")
+recallTrain_lradas <- sensitivity(lr_adas_train, train.adas$class, positive = "Sim")
+F1Train_lradas <- (2 * precisionTrain_lradas * recallTrain_lradas) / (precisionTrain_lradas + recallTrain_lradas)
+
+```
+
+#### Random Forest: Treinamento no conjunto ADASYN 
+
+```{r}
+# E. Random Forest: ADASYN data
+rf_adas_start <- Sys.time()
+rf_adas <- train(class ~ .,
+                 data = train.adas,
+                 method = "rf",
+                 trControl = ctrl,
+                 metric = "ROC")
+rf_adas_end <- Sys.time()
+rf_adas_runtime <- rf_adas_end - rf_adas_start
+rf_adas_runtime
+
+rf_adas_train_pred <- predict(rf_adas, train.adas, type = "prob")
+rf_adas_train <- factor(ifelse(rf_adas_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(rf_adas_train, train.adas$class, positive = "Sim")
+
+# C. RF Save Precision/Recall/F
+precisionTrain_rfadas <- posPredValue(rf_adas_train, train.adas$class, positive = "Sim")
+recallTrain_rfadas <- sensitivity(rf_adas_train, train.adas$class, positive = "Sim")
+F1Train_rfadas <- (2 * precisionTrain_rfadas * recallTrain_rfadas) / (precisionTrain_rfadas + recallTrain_rfadas)
+
+```
+
+
+## 6.2.1 Compilar previsões usando modelos treinados no conjunto de dados de treinamento balanceado ADASYN
+
+#### Decision Tree Model - Teste dos modelos treinados no conjunto ADASYN
+
+```{r}
+
+# A. Decision Tree Model - Trained on ADASYN dataset
+dt_adas_pred_start <- Sys.time()
+dt_adas_pred <- predict(dt_adas, test, type = "prob")
+
+# Decision Tree - Assign class to probabilities
+dt_adas_test <- factor(ifelse(dt_adas_pred$Sim > probabilidade, "Sim", "Não"))
+dt_adas_pred_end <- Sys.time()
+dt_adas_pred_runtime <- dt_adas_pred_end - dt_adas_pred_start
+dt_adas_pred_runtime
+
+confusionMatrix(dt_adas_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# Decision Save Precision/Recall/F
+precision_dtadas <- posPredValue(dt_adas_test, test$CasosBin2, positive = "Sim")
+recall_dtadas <- sensitivity(dt_adas_test, test$CasosBin2, positive = "Sim")
+F1_dtadas <- (2 * precision_dtadas * recall_dtadas) / (precision_dtadas + recall_dtadas)
+```
+
+
+#### Naive Bayes Model - Teste dos modelos treinados no conjunto ADASYN
+
+```{r}
+
+# Naive Bayes Model - Trained on ADASYN dataset
+nb_adas_pred_start <- Sys.time()
+nb_adas_pred <- predict(nb_adas, test, type = "prob")
+
+#  NB - Assign class to probabilities
+nb_adas_test <- factor(ifelse(nb_adas_pred$Sim > probabilidade, "Sim", "Não"))
+nb_adas_pred_end <- Sys.time()
+nb_adas_pred_runtime <- nb_adas_pred_end - nb_adas_pred_start
+nb_adas_pred_runtime
+
+confusionMatrix(nb_adas_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+#  NB Save Precision/Recall/F
+precision_nbadas <- posPredValue(nb_adas_test, test$CasosBin2, positive = "Sim")
+recall_nbadas <- sensitivity(nb_adas_test, test$CasosBin2, positive = "Sim")
+F1_nbadas <- (2 * precision_nbadas * recall_nbadas) / (precision_nbadas + recall_nbadas)
+```
+
+#### Análise Discriminante Linear (LDA) - Teste dos modelos treinados no conjunto ADASYN
+
+```{r}
+
+# LDA Model - Trained on ADASYN dataset
+lda_adas_pred_start <- Sys.time()
+lda_adas_pred <- predict(lda_adas, test, type = "prob")
+
+# LDA - Assign class to probabilities
+lda_adas_test <- factor(ifelse(lda_adas_pred$Sim > probabilidade, "Sim", "Não"))
+lda_adas_pred_end <- Sys.time()
+lda_adas_pred_runtime <- lda_adas_pred_end - lda_adas_pred_start
+lda_adas_pred_runtime
+
+confusionMatrix(lda_adas_test, getElement(test, 'CasosBin2'), positive = "Sim")
+
+# LDA Save Precision/Recall/F
+precision_ldaadas <- posPredValue(lda_adas_test, test$CasosBin2, positive = "Sim")
+recall_ldaadas <- sensitivity(lda_adas_test, test$CasosBin2, positive = "Sim")
+F1_ldaadas <- (2 * precision_ldaadas * recall_ldaadas) / (precision_ldaadas + recall_ldaadas)
+```
+
+#### Regressão Logística (LR) - Teste dos modelos treinados no conjunto ADASYN
+
+```{r}
+#A. LR Model predictions
+lr_adas_pred_start <- Sys.time()
+lr_adas_pred <- predict(lr_adas,test,type = "prob")
+
+# LR - Assign class to probabilities
+lr_adas_test <- factor(ifelse(lr_adas_pred$Sim > probabilidade,"Sim","Não") )
+lr_adas_pred_end <- Sys.time()
+lr_adas_pred_runtime <- lr_adas_pred_end - lr_adas_pred_start
+lr_adas_pred_runtime
+
+
+confusionMatrix(lr_adas_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# LR Save Precision/Recall/F
+precision_lradas <- posPredValue(lr_adas_test,test$CasosBin2,positive = "Sim")
+recall_lradas <- sensitivity(lr_adas_test,test$CasosBin2,positive = "Sim")
+F1_lradas <- (2 * precision_lradas * recall_lradas)/(precision_lradas + recall_lradas)
+```
+
+
+#### Random Forest Model - Teste dos modelos treinados no conjunto ADASYN
+
+```{r}
+#A. RF Model predictions
+rf_adas_pred_start <- Sys.time()
+rf_adas_pred <- predict(rf_adas,test,type = "prob")
+
+# RF - Assign class to probabilities
+rf_adas_test <- factor(ifelse(rf_adas_pred$Sim > probabilidade,"Sim","Não") )
+rf_adas_pred_end <- Sys.time()
+rf_adas_pred_runtime <- rf_adas_pred_end - rf_adas_pred_start
+rf_adas_pred_runtime
+
+confusionMatrix(rf_adas_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# RF Save Precision/Recall/F
+precision_rfadas <- posPredValue(lr_adas_test,test$CasosBin2,positive = "Sim")
+recall_rfadas <- sensitivity(rf_adas_test,test$CasosBin2,positive = "Sim")
+F1_rfadas <- (2 * precision_rfadas * recall_rfadas)/(precision_rfadas + recall_rfadas)
+
+```
+
+
+### 6.4 DB-SMOTE Balanced Data: Train Decision Tree, Naive Bayes, LR, LDA e RF Models
+
+#### Decision Tree Model - Treinamento no conjunto DB-SMOTE
+
+```{r}
+
+# A. Decision Tree: dbsmote data
+dt_dbsmote_start <- Sys.time()
+dt_dbsmote <- train(class ~ .,
+                    data = train.dbsmote,
+                    method = "rpart",
+                    trControl = ctrl,
+                    metric = "ROC")
+dt_dbsmote_end <- Sys.time()
+dt_dbsmote_runtime <- dt_dbsmote_end - dt_dbsmote_start
+dt_dbsmote_runtime
+
+dt_dbsmote_train_pred <- predict(dt_dbsmote, train.dbsmote, type = "prob")
+dt_dbsmote_train <- factor(ifelse(dt_dbsmote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(dt_dbsmote_train, getElement(train.dbsmote, 'class'), positive = "Sim")
+
+# Decision Save Precision/Recall/F
+precisionTrain_dtdbsmote <- posPredValue(dt_dbsmote_train, train.dbsmote$class, positive = "Sim")
+recallTrain_dtdbsmote <- sensitivity(dt_dbsmote_train, train.dbsmote$class, positive = "Sim")
+F1Train_dtdbsmote <- (2 * precisionTrain_dtdbsmote * recallTrain_dtdbsmote) / (precisionTrain_dtdbsmote + recallTrain_dtdbsmote)
+
+```
+
+#### Naive Bayes: Treinamento no conjunto DB-SMOTE
+
+```{r}
+
+# B. Naive Bayes regression: dbsmote data
+nb_dbsmote_start <- Sys.time()
+nb_dbsmote <- train(class ~ .,
+                    data = train.dbsmote,
+                    method = "naive_bayes",
+                    trControl = ctrl,
+                    metric = "ROC")
+nb_dbsmote_end <- Sys.time()
+nb_dbsmote_runtime <- nb_dbsmote_end - nb_dbsmote_start
+nb_dbsmote_runtime
+
+nb_dbsmote_train_pred <- predict(nb_dbsmote, train.dbsmote, type = "prob")
+nb_dbsmote_train <- factor(ifelse(nb_dbsmote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(nb_dbsmote_train, getElement(train.dbsmote, 'class'), positive = "Sim")
+
+# NB Save Precision/Recall/F
+precisionTrain_nbdbsmote <- posPredValue(nb_dbsmote_train, train.dbsmote$class, positive = "Sim")
+recallTrain_nbdbsmote <- sensitivity(nb_dbsmote_train, train.dbsmote$class, positive = "Sim")
+F1Train_nbdbsmote <- (2 * precisionTrain_nbdbsmote * recallTrain_nbdbsmote) / (precisionTrain_nbdbsmote + recallTrain_nbdbsmote)
+```
+
+####  Linear Discriminant Analysis: Treinamento no conjunto DB-SMOTE
+
+```{r}
+
+# C. Linear Discriminant Analysis: dbsmote data
+lda_dbsmote_start <- Sys.time()
+lda_dbsmote <- train(class ~ .,
+                     data = train.dbsmote,
+                     method = "lda",
+                     trControl = ctrl,
+                     metric = "ROC")
+lda_dbsmote_end <- Sys.time()
+lda_dbsmote_runtime <- lda_dbsmote_end - lda_dbsmote_start
+lda_dbsmote_runtime
+
+lda_dbsmote_train_pred <- predict(lda_dbsmote, train.dbsmote, type = "prob")
+lda_dbsmote_train <- factor(ifelse(lda_dbsmote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lda_dbsmote_train, getElement(train.dbsmote, 'class'), positive = "Sim")
+
+# LDA Save Precision/Recall/F
+precisionTrain_ldadbsmote <- posPredValue(lda_dbsmote_train, train.dbsmote$class, positive = "Sim")
+recallTrain_ldadbsmote <- sensitivity(lda_dbsmote_train, train.dbsmote$class, positive = "Sim")
+F1Train_ldadbsmote <- (2 * precisionTrain_ldadbsmote * recallTrain_ldadbsmote) / (precisionTrain_ldadbsmote + recallTrain_ldadbsmote)
+
+```
+
+#### Regressão Logística: Treinamento no conjunto DB-SMOTE
+
+```{r}
+# D. Regressão Logística: dbsmote data
+lr_dbsmote_start <- Sys.time()
+lr_dbsmote <- train(class ~ .,
+                    data = train.dbsmote,
+                    method = "bayesglm",
+                    trControl = ctrl,
+                    metric = "ROC")
+lr_dbsmote_end <- Sys.time()
+lr_dbsmote_runtime <- lr_dbsmote_end - lr_dbsmote_start
+lr_dbsmote_runtime
+
+lr_dbsmote_train_pred <- predict(lr_dbsmote, train.dbsmote, type = "prob")
+lr_dbsmote_train <- factor(ifelse(lr_dbsmote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(lr_dbsmote_train, getElement(train.dbsmote, 'class'), positive = "Sim")
+
+# LR Save Precision/Recall/F
+precisionTrain_lrdbsmote <- posPredValue(lr_dbsmote_train, train.dbsmote$class, positive = "Sim")
+recallTrain_lrdbsmote <- sensitivity(lr_dbsmote_train, train.dbsmote$class, positive = "Sim")
+F1Train_lrdbsmote <- (2 * precisionTrain_lrdbsmote * recallTrain_lrdbsmote) / (precisionTrain_lrdbsmote + recallTrain_lrdbsmote)
+
+```
+
+#### Random Forest: Treinamento no conjunto DB-SMOTE
+
+```{r}
+# E. Random Forest: dbsmote data
+rf_dbsmote_start <- Sys.time()
+rf_dbsmote <- train(class ~ .,
+                    data = train.dbsmote,
+                    method = "rf",
+                    trControl = ctrl,
+                    metric = "ROC")
+rf_dbsmote_end <- Sys.time()
+rf_dbsmote_runtime <- rf_dbsmote_end - rf_dbsmote_start
+rf_dbsmote_runtime
+
+rf_dbsmote_train_pred <- predict(rf_dbsmote, train.dbsmote, type = "prob")
+rf_dbsmote_train <- factor(ifelse(rf_dbsmote_train_pred$Sim > probabilidade, "Sim", "Não"))
+confusionMatrix(rf_dbsmote_train, getElement(train.dbsmote, 'class'), positive = "Sim")
+
+# RF Save Precision/Recall/F
+precisionTrain_rfdbsmote <- posPredValue(rf_dbsmote_train, train.dbsmote$class, positive = "Sim")
+recallTrain_rfdbsmote <- sensitivity(rf_dbsmote_train, train.dbsmote$class, positive = "Sim")
+F1Train_rfdbsmote <- (2 * precisionTrain_rfdbsmote * recallTrain_rfdbsmote) / (precisionTrain_rfdbsmote + recallTrain_rfdbsmote)
+```
+
+
+## 6.4.1 Compilar previsões usando modelos treinados no conjunto de dados de treinamento balanceado DB-SMOTE
+
+#### Decision Tree Model - Teste dos modelos treinados no conjunto DB-SMOTE
+
+```{r}
+
+#A. Decision Tree Model predictions
+
+dt_dbsmote_pred_start <- Sys.time()
+dt_dbsmote_pred <- predict(dt_dbsmote,test,type = "prob")
+
+# Decision Tree - Assign class to probabilities
+
+dt_dbsmote_test<- factor(ifelse(dt_dbsmote_pred$Sim > probabilidade,"Sim","Não"))
+dt_dbsmote_pred_end <- Sys.time()
+dt_dbsmote_pred_runtime <- dt_dbsmote_pred_end - dt_dbsmote_pred_start
+dt_dbsmote_pred_runtime
+
+confusionMatrix(dt_dbsmote_test, getElement(test,'CasosBin2'), positive="Sim")
+
+
+#  Decision Save Precision/Recall/F
+
+precision_dtdbsmote <- posPredValue(dt_dbsmote_test,test$CasosBin2,positive = "Sim")
+recall_dtdbsmote <- sensitivity(dt_dbsmote_test,test$CasosBin2,positive = "Sim")
+F1_dtdbsmote <- (2 * precision_dtdbsmote * recall_dtdbsmote) / (precision_dtdbsmote + recall_dtdbsmote)
+
+```
+
+#### Naive Bayes Model - Teste dos modelos treinados no conjunto DB-SMOTE
+
+```{r}
+#B. NB Model predictions
+nb_dbsmote_pred_start <- Sys.time()
+nb_dbsmote_pred <- predict(nb_dbsmote,test,type = "prob")
+
+# NB - Assign class to probabilities
+nb_dbsmote_test <- factor(ifelse(nb_dbsmote_pred$Sim > probabilidade,"Sim","Não"))
+nb_dbsmote_pred_end <- Sys.time()
+nb_dbsmote_pred_runtime <- nb_dbsmote_pred_end - nb_dbsmote_pred_start
+nb_dbsmote_pred_runtime
+
+confusionMatrix(nb_dbsmote_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# NB Save Precision/Recall/F
+precision_nbdbsmote <- posPredValue(nb_dbsmote_test,test$CasosBin2,positive = "Sim")
+recall_nbdbsmote <- sensitivity(nb_dbsmote_test,test$CasosBin2,positive = "Sim")
+F1_nbdbsmote <- (2 * precision_nbdbsmote * recall_nbdbsmote) / (precision_nbdbsmote + recall_nbdbsmote)
+
+```
+
+#### Análise Discriminante Linear (LDA) - Teste dos modelos treinados no conjunto DB-SMOTE
+
+```{r}
+#C. LDA Model predictions
+lda_dbsmote_pred_start <- Sys.time()
+lda_dbsmote_pred <- predict(lda_dbsmote,test,type = "prob")
+
+# LDA - Assign class to probabilities
+lda_dbsmote_test<- factor(ifelse(lda_dbsmote_pred$Sim > probabilidade,"Sim","Não"))
+lda_dbsmote_pred_end <- Sys.time()
+lda_dbsmote_pred_runtime <- lda_dbsmote_pred_end - lda_dbsmote_pred_start
+lda_dbsmote_pred_runtime
+
+confusionMatrix(lda_dbsmote_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# LDA Save Precision/Recall/F
+precision_ldadbsmote <- posPredValue(lda_dbsmote_test,test$CasosBin2,positive = "Sim")
+recall_ldadbsmote <- sensitivity(lda_dbsmote_test,test$CasosBin2,positive = "Sim")
+F1_ldadbsmote <- (2 * precision_ldadbsmote * recall_ldadbsmote) / (precision_ldadbsmote + recall_ldadbsmote)
+```
+
+#### Regressão Logística (LR) - Teste dos modelos treinados no conjunto DB-SMOTE
+
+```{r}
+
+#D. LR Model predictions
+lr_dbsmote_pred_start <- Sys.time()
+lr_dbsmote_pred <- predict(lr_dbsmote,test,type = "prob")
+
+# LR - Assign class to probabilities
+lr_dbsmote_test<- factor(ifelse(lr_dbsmote_pred$Sim > probabilidade,"Sim","Não"))
+lr_dbsmote_pred_end <- Sys.time()
+lr_dbsmote_pred_runtime <- lr_dbsmote_pred_end - lr_dbsmote_pred_start
+lr_dbsmote_pred_runtime
+
+confusionMatrix(lr_dbsmote_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# LR Save Precision/Recall/F
+precision_lrdbsmote <- posPredValue(lr_dbsmote_test,test$CasosBin2,positive = "Sim")
+recall_lrdbsmote <- sensitivity(lr_dbsmote_test,test$CasosBin2,positive = "Sim")
+F1_lrdbsmote <- (2 * precision_lrdbsmote * recall_lrdbsmote) / (precision_lrdbsmote + recall_lrdbsmote)
+
+```
+
+#### Random Forest Model - Teste dos modelos treinados no conjunto DB-SMOTE
+
+```{r}
+#E. RF Model predictions
+rf_dbsmote_pred_start <- Sys.time()
+rf_dbsmote_pred <- predict(rf_dbsmote,test,type = "prob")
+
+# RF - Assign class to probabilities
+rf_dbsmote_test<- factor(ifelse(rf_dbsmote_pred$Sim > probabilidade,"Sim","Não"))
+rf_dbsmote_pred_end <- Sys.time()
+rf_dbsmote_pred_runtime <- rf_dbsmote_pred_end - rf_dbsmote_pred_start
+rf_dbsmote_pred_runtime
+
+confusionMatrix(rf_dbsmote_test, getElement(test,'CasosBin2'), positive="Sim")
+
+# RF Save Precision/Recall/F
+precision_rfdbsmote <- posPredValue(rf_dbsmote_test,test$CasosBin2,positive = "Sim")
+recall_rfdbsmote <- sensitivity(rf_dbsmote_test,test$CasosBin2,positive = "Sim")
+F1_rfdbsmote <- (2 * precision_rfdbsmote * recall_rfdbsmote) / (precision_rfdbsmote + recall_rfdbsmote)
+
+```
+
+
+
+### 7. Avaliação - Comparando graficamente o desempanho dos modelos
+
+Iremos comparar o recall, precisão e medidas de desempenho de F1 para cada um dos quatro modelos que treinamos usando os quatro conjuntos de dados de treinamento: original desbalanceado, SMOTE balanceado,
+ADASYN balanceado e DB SMOTE balanceado.
+
+#### 7.1 Treinamento:
+
+
+```{r}
+#Lets reset the chart settings so we see one chart at a time
+par(mfrow = c(1,1))
+
+#Compare the Recall of the models: TP / TP + FN. To do that, we'll need to combine our results into a dataframe
+
+model_compare_recall <- data.frame(Model = c('DT-Orig',
+                                      'NB-Orig',
+                                      'LDA-Orig',
+                                      'LR-Ori',
+                                      'RF_Ori',
+                                      'DT-SMOTE',
+                                      'NB-SMOTE',
+                                      'LDA-SMOTE',
+                                      'LR-SMOTE',
+                                      'RF_SMOTE',
+                                      'DT-ADASYN',
+                                      'NB-ADASYN',
+                                      'LDA-ADASYN',
+                                      'LR-ADASYN',
+                                      'RF-ADASYN',
+                                      'DT-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'LDA-DBSMOTE',
+                                      'LR-DBSMOTE',
+                                      'RF_DBSMOTE'),
+                            Recall = c(recallTrain_dtOrig,
+                                    recallTrain_nbOrig,
+                                   recallTrain_ldaOrig,
+                                   recallTrain_lrOrig,
+                                   recallTrain_rfOrig,
+                                   recallTrain_dtsmote,
+                                   recallTrain_nbsmote,
+                                   recallTrain_ldasmote,
+                                   recallTrain_lrsmote,
+                                   recallTrain_rfsmote,
+                                   recallTrain_dtadas,
+                                   recallTrain_nbadas,
+                                   recallTrain_ldaadas,
+                                   recallTrain_lradas,
+                                   recallTrain_rfadas,
+                                   recallTrain_dtdbsmote,
+                                   recallTrain_nbdbsmote,
+                                   recallTrain_ldadbsmote,
+                                   recallTrain_lrdbsmote,
+                                   recallTrain_rfdbsmote))
+ggplot(aes(x = reorder(Model,-Recall),y = Recall),data = model_compare_recall) +
+  geom_bar(stat = 'identity', fill = 'light blue') +
+  ggtitle('Comparative Recall of Models on Train Data') +
+  xlab('Models')  +
+  ylab('Recall Measure')+
+  geom_text(aes(label = round(Recall,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+```
+
+
+```{r, fig.height = 8, warning=FALSE}
+
+#Compare the Precision of the models: TP/TP+FP 
+model_compare_precision <- data.frame(Model = c('DT-Orig',
+                                      'NB-Orig',
+                                      'LDA-Orig',
+                                      'LR-Ori',
+                                      'RF_Ori',
+                                      'DT-SMOTE',
+                                      'NB-SMOTE',
+                                      'LDA-SMOTE',
+                                      'LR-SMOTE',
+                                      'RF_SMOTE',
+                                      'DT-ADASYN',
+                                      'NB-ADASYN',
+                                      'LDA-ADASYN',
+                                      'LR-ADASYN',
+                                      'RF-ADASYN',
+                                      'DT-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'LDA-DBSMOTE',
+                                      'LR-DBSMOTE',
+                                      'RF_DBSMOTE'),
+                              Precision = c(precisionTrain_dtOrig,
+                                         precisionTrain_nbOrig,
+                                         precisionTrain_ldaOrig,
+                                         precisionTrain_lrOrig,
+                                         precisionTrain_rfOrig,
+                                         precisionTrain_dtsmote,
+                                         precisionTrain_nbsmote,
+                                         precisionTrain_ldasmote,
+                                         precisionTrain_lrsmote,
+                                         precisionTrain_rfsmote,
+                                         precisionTrain_dtadas,
+                                         precisionTrain_nbadas,
+                                         precisionTrain_ldaadas,
+                                         precisionTrain_lradas,
+                                         precisionTrain_rfadas,
+                                         precisionTrain_dtdbsmote,
+                                         precisionTrain_nbdbsmote,
+                                         precisionTrain_ldadbsmote,
+                                         precisionTrain_lrdbsmote,
+                                         precisionTrain_rfdbsmote))
+
+ggplot(aes(x = reorder(Model,-Precision),y = Precision),data = model_compare_precision) +
+  geom_bar(stat = 'identity',fill = 'light green') +
+  ggtitle('Comparative Precision of Models on Train Data') +
+  xlab('Models')  +
+  ylab('Precision Measure')+
+  geom_text(aes(label = round(Precision,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+```
+
+```{r, fig.height = 8, warning=FALSE}
+#Compare the F1 of the models: 2*((Precision*Recall) / (Precision + Recall)) 
+
+model_compare_f1 <- data.frame(Model = c('DT-Orig',
+                                      'NB-Orig',
+                                      'LDA-Orig',
+                                      'LR-Ori',
+                                      'RF_Ori',
+                                      'DT-SMOTE',
+                                      'NB-SMOTE',
+                                      'LDA-SMOTE',
+                                      'LR-SMOTE',
+                                      'RF_SMOTE',
+                                      'DT-ADASYN',
+                                      'NB-ADASYN',
+                                      'LDA-ADASYN',
+                                      'LR-ADASYN',
+                                      'RF-ADASYN',
+                                      'DT-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'LDA-DBSMOTE',
+                                      'LR-DBSMOTE',
+                                      'RF_DBSMOTE'),
+                              F1 = c(F1_dtOrig,
+                                         F1Train_nbOrig,
+                                         F1Train_ldaOrig,
+                                         F1Train_lrOrig,
+                                         F1Train_rfOrig,
+                                         F1Train_dtsmote,
+                                         F1Train_nbsmote,
+                                         F1Train_ldasmote,
+                                         F1Train_lrsmote,
+                                         F1Train_rfsmote,
+                                         F1Train_dtadas,
+                                         F1Train_nbadas,
+                                         F1Train_ldaadas,
+                                         F1Train_lradas,
+                                         F1Train_rfadas,
+                                         F1Train_dtdbsmote,
+                                         F1Train_nbdbsmote,
+                                         F1Train_ldadbsmote,
+                                         F1Train_lrdbsmote,
+                                         F1Train_rfdbsmote))
+
+ggplot(aes(x=reorder(Model,-F1),y = F1),data = model_compare_f1) +
+  geom_bar(stat = 'identity',fill = '#FF6666') +
+  ggtitle('Comparative F1 of Models on Train Data') +
+  xlab('Models')  +
+  ylab('F1 Measure')+
+  geom_text(aes(label = round(F1,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+```
+
+
+#### 7.2 Teste:
+
+
+```{r, fig.height = 8}
+#Lets reset the chart settings so we see one chart at a time
+par(mfrow = c(1,1))
+
+#Compare the Recall of the models: TP / TP + FN. To do that, we'll need to combine our results into a dataframe
+
+model_compare_recall <- data.frame(Model = c('DT-Orig',
+                                      'NB-Orig',
+                                      'LDA-Orig',
+                                      'LR-Ori',
+                                      'RF_Ori',
+                                      'DT-SMOTE',
+                                      'NB-SMOTE',
+                                      'LDA-SMOTE',
+                                      'LR-SMOTE',
+                                      'RF_SMOTE',
+                                      'DT-ADASYN',
+                                      'NB-ADASYN',
+                                      'LDA-ADASYN',
+                                      'LR-ADASYN',
+                                      'RF-ADASYN',
+                                      'DT-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'LDA-DBSMOTE',
+                                      'LR-DBSMOTE',
+                                      'RF_DBSMOTE'),
+                            Recall = c(recall_dtOrig,
+                                   recall_nbOrig,
+                                   recall_ldaOrig,
+                                   recall_lrOrig,
+                                   recall_rfOrig,
+                                   recall_dtsmote,
+                                   recall_nbsmote,
+                                   recall_ldasmote,
+                                   recall_lrsmote,
+                                   recall_rfsmote,
+                                   recall_dtadas,
+                                   recall_nbadas,
+                                   recall_ldaadas,
+                                   recall_lradas,
+                                   recall_rfadas,
+                                   recall_dtdbsmote,
+                                   recall_nbdbsmote,
+                                   recall_ldadbsmote,
+                                   recall_lrdbsmote,
+                                   recall_rfdbsmote))
+
+ggplot(aes(x = reorder(Model,-Recall),y = Recall),data = model_compare_recall) +
+  geom_bar(stat = 'identity', fill = 'light blue') +
+  ggtitle('Comparative Recall of Models on Test Data') +
+  xlab('Models')  +
+  ylab('Recall Measure')+
+  geom_text(aes(label = round(Recall,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+```
+
+
+```{r, fig.height = 8, warning=FALSE}
+
+#Compare the Precision of the models: TP/TP+FP 
+model_compare_precision <- data.frame(Model = c('AD-Orig',
+                                      'NB-Orig',
+                                      'ADL-Orig',
+                                      'RL-Ori',
+                                      'FA_Ori',
+                                      'AD-SMOTE',
+                                      'NB-SMOTE',
+                                      'ADL-SMOTE',
+                                      'RL-SMOTE',
+                                      'FA_SMOTE',
+                                      'AD-ADASYN',
+                                      'NB-ADASYN',
+                                      'ADL-ADASYN',
+                                      'RL-ADASYN',
+                                      'FA-ADASYN',
+                                      'AD-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'ADL-DBSMOTE',
+                                      'RL-DBSMOTE',
+                                      'FA_DBSMOTE'),
+                              Precision = c(precision_dtOrig,
+                                         precision_nbOrig,
+                                         precision_ldaOrig,
+                                         precision_lrOrig,
+                                         precision_rfOrig,
+                                         precision_dtsmote,
+                                         precision_nbsmote,
+                                         precision_ldasmote,
+                                         precision_lrsmote,
+                                         precision_rfsmote,
+                                         precision_dtadas,
+                                         precision_nbadas,
+                                         precision_ldaadas,
+                                         precision_lradas,
+                                         precision_rfadas,
+                                         precision_dtdbsmote,
+                                         precision_nbdbsmote,
+                                         precision_ldadbsmote,
+                                         precision_lrdbsmote,
+                                         precision_rfdbsmote))
+
+ggplot(aes(x = reorder(Model,-Precision),y = Precision),data = model_compare_precision) +
+  geom_bar(stat = 'identity',fill = 'light green') +
+  ggtitle('Comparative Precision of Models on Test Data') +
+  xlab('Modelos')  +
+  ylab('Precision Measure')+
+  geom_text(aes(label = round(Precision,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+```
+
+```{r, fig.height = 8, warning=FALSE}
+#Compare the F1 of the models: 2*((Precision*Recall) / (Precision + Recall)) 
+
+model_compare_f1 <- data.frame(Model = c('DT-Orig',
+                                      'NB-Orig',
+                                      'LDA-Orig',
+                                      'LR-Ori',
+                                      'RF_Ori',
+                                      'DT-SMOTE',
+                                      'NB-SMOTE',
+                                      'LDA-SMOTE',
+                                      'LR-SMOTE',
+                                      'RF_SMOTE',
+                                      'DT-ADASYN',
+                                      'NB-ADASYN',
+                                      'LDA-ADASYN',
+                                      'LR-ADASYN',
+                                      'RF-ADASYN',
+                                      'DT-DBSMOTE',
+                                      'NB-DBSMOTE',
+                                      'LDA-DBSMOTE',
+                                      'LR-DBSMOTE',
+                                      'RF_DBSMOTE'),
+                              F1 = c(F1_dtOrig,
+                                         F1_nbOrig,
+                                         F1_ldaOrig,
+                                         F1_lrOrig,
+                                         F1_rfOrig,
+                                         F1_dtsmote,
+                                         F1_nbsmote,
+                                         F1_ldasmote,
+                                         F1_lrsmote,
+                                         F1_rfsmote,
+                                         F1_dtadas,
+                                         F1_nbadas,
+                                         F1_ldaadas,
+                                         F1_lradas,
+                                         F1_rfadas,
+                                         F1_dtdbsmote,
+                                         F1_nbdbsmote,
+                                         F1_ldadbsmote,
+                                         F1_lrdbsmote,
+                                         F1_rfdbsmote))
+
+ggplot(aes(x=reorder(Model,-F1),y = F1),data = model_compare_f1) +
+  geom_bar(stat = 'identity',fill = '#FF6666') +
+  ggtitle('Comparative F1 of Models on Test Data') +
+  xlab('Models')  +
+  ylab('F1 Measure')+
+  geom_text(aes(label = round(F1,2))) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 40))
+
+
+```
+
+
+#### 7.3 Traçando AUC para todos os modelos 
+
+### 7.3 Traçando AUC para os Modelos
+
+### Conjunto desbalanceado
+
+
+
+Os gráficos de curva ROC (Receiver Operating Characteristic) e suas respectivas áreas sob a curva (AUC) foram gerados para comparar o desempenho dos modelos treinados nos diferentes conjuntos de dados: original, SMOTE, ADASYN e DBSMOTE. Cada gráfico compara os modelos de regressão logística (LR), análise discriminante linear (LDA), árvore de decisão (DT), Naive Bayes (NB) e Random Forest (RF).
+
+Os códigos foram implementados separadamente em formato R, configurados para plotar as curvas ROC usando a biblioteca `pROC`. Cada gráfico foi ajustado para uma região de plotagem quadrada (`par(pty = "s")`) para garantir proporções adequadas, e as configurações padrão foram restauradas após a plotagem (`par(pty = "m")`). 
+
+Gráficos AUC's dos:
+
+Treinado no desbalanceado: `Fig_original.R`
+Treinado no balanceado com SMOTE: `Fig_smote.R`
+Treinado no balanceado com ADASYN: `Fig_adasyn.R`
+Treinado no balanceado com DB-SMOTE: `Fig_dbsmote.R`
+
+
+
+#### 7.4 Obtendo as variáveis mais importantes para cada modelo 
+
+```{r}
+print_and_plot_varimp <- function(model, title) {
+  print(varImp(model))  # Imprime a importância das variáveis
+  plot(varImp(model), main = title)  # Plota a importância das variáveis
+}
+
+# Modelo Random Forest no conjunto de dados original
+print_and_plot_varimp(rf_orig, "Variable Importance - Original Dataset")
+
+# Modelo Random Forest no conjunto de dados SMOTE
+print_and_plot_varimp(rf_smote, "Variable Importance - SMOTE Dataset")
+
+# Modelo Random Forest no conjunto de dados ADASYN
+print_and_plot_varimp(rf_adas, "Variable Importance - ADASYN Dataset")
+
+# Modelo Random Forest no conjunto de dados DBSMOTE
+print_and_plot_varimp(rf_dbsmote, "Variable Importance - DBSMOTE Dataset")
+```
