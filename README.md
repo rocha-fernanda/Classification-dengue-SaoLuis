@@ -1,6 +1,6 @@
 ---
 
-# Projeto: rocha-fernanda-Classification-dengue-SaoLuis
+# Projeto: Classification-dengue-SaoLuis
 
 ## Descrição
 Este projeto visa calcular a probabilidade de ocorrência de dengue em São Luís do Maranhão utilizando informações de cada bairro, através de modelos de aprendizado supervisionado.
